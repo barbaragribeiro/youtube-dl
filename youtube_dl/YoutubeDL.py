@@ -178,6 +178,8 @@ class YoutubeDL(object):
     logtostderr:       Log messages to stderr instead of stdout.
     writedescription:  Write the video description to a .description file
     writeinfojson:     Write the video description to a .info.json file
+    noformatinfo:      Do not write to the .info.json file data concerning 
+                       video and caption formats and format urls
     writeannotations:  Write the video annotations to a .annotations.xml file
     writethumbnail:    Write the thumbnail image to a file
     write_all_thumbnails:  Write all thumbnail formats to files
@@ -1514,136 +1516,139 @@ class YoutubeDL(object):
         info_dict['requested_subtitles'] = self.process_subtitles(
             info_dict['id'], subtitles, automatic_captions)
 
-        # We now pick which formats have to be downloaded
-        if info_dict.get('formats') is None:
-            # There's only one format available
-            formats = [info_dict]
-        else:
-            formats = info_dict['formats']
-
-        if not formats:
-            raise ExtractorError('No video formats found!')
-
-        def is_wellformed(f):
-            url = f.get('url')
-            if not url:
-                self.report_warning(
-                    '"url" field is missing or empty - skipping format, '
-                    'there is an error in extractor')
-                return False
-            if isinstance(url, bytes):
-                sanitize_string_field(f, 'url')
-            return True
-
-        # Filter out malformed formats for better extraction robustness
-        formats = list(filter(is_wellformed, formats))
-
-        formats_dict = {}
-
-        # We check that all the formats have the format and format_id fields
-        for i, format in enumerate(formats):
-            sanitize_string_field(format, 'format_id')
-            sanitize_numeric_fields(format)
-            format['url'] = sanitize_url(format['url'])
-            if not format.get('format_id'):
-                format['format_id'] = compat_str(i)
+        if not self.params.get('noformatinfo'):
+            # We now pick which formats have to be downloaded
+            if info_dict.get('formats') is None:
+                # There's only one format available
+                formats = [info_dict]
             else:
-                # Sanitize format_id from characters used in format selector expression
-                format['format_id'] = re.sub(r'[\s,/+\[\]()]', '_', format['format_id'])
-            format_id = format['format_id']
-            if format_id not in formats_dict:
-                formats_dict[format_id] = []
-            formats_dict[format_id].append(format)
+                formats = info_dict['formats']
 
-        # Make sure all formats have unique format_id
-        for format_id, ambiguous_formats in formats_dict.items():
-            if len(ambiguous_formats) > 1:
-                for i, format in enumerate(ambiguous_formats):
-                    format['format_id'] = '%s-%d' % (format_id, i)
+            if not formats:
+                raise ExtractorError('No video formats found!')
 
-        for i, format in enumerate(formats):
-            if format.get('format') is None:
-                format['format'] = '{id} - {res}{note}'.format(
-                    id=format['format_id'],
-                    res=self.format_resolution(format),
-                    note=' ({0})'.format(format['format_note']) if format.get('format_note') is not None else '',
-                )
-            # Automatically determine file extension if missing
-            if format.get('ext') is None:
-                format['ext'] = determine_ext(format['url']).lower()
-            # Automatically determine protocol if missing (useful for format
-            # selection purposes)
-            if format.get('protocol') is None:
-                format['protocol'] = determine_protocol(format)
-            # Add HTTP headers, so that external programs can use them from the
-            # json output
-            full_format_info = info_dict.copy()
-            full_format_info.update(format)
-            format['http_headers'] = self._calc_headers(full_format_info)
-        # Remove private housekeeping stuff
-        if '__x_forwarded_for_ip' in info_dict:
-            del info_dict['__x_forwarded_for_ip']
+            def is_wellformed(f):
+                url = f.get('url')
+                if not url:
+                    self.report_warning(
+                        '"url" field is missing or empty - skipping format, '
+                        'there is an error in extractor')
+                    return False
+                if isinstance(url, bytes):
+                    sanitize_string_field(f, 'url')
+                return True
 
-        # TODO Central sorting goes here
+            # Filter out malformed formats for better extraction robustness
+            formats = list(filter(is_wellformed, formats))
 
-        if formats[0] is not info_dict:
-            # only set the 'formats' fields if the original info_dict list them
-            # otherwise we end up with a circular reference, the first (and unique)
-            # element in the 'formats' field in info_dict is info_dict itself,
-            # which can't be exported to json
-            info_dict['formats'] = formats
-        if self.params.get('listformats'):
-            self.list_formats(info_dict)
-            return
+            formats_dict = {}
 
-        req_format = self.params.get('format')
-        if req_format is None:
-            req_format = self._default_format_spec(info_dict, download=download)
-            if self.params.get('verbose'):
-                self.to_stdout('[debug] Default format spec: %s' % req_format)
+            # We check that all the formats have the format and format_id fields
+            for i, format in enumerate(formats):
+                sanitize_string_field(format, 'format_id')
+                sanitize_numeric_fields(format)
+                format['url'] = sanitize_url(format['url'])
+                if not format.get('format_id'):
+                    format['format_id'] = compat_str(i)
+                else:
+                    # Sanitize format_id from characters used in format selector expression
+                    format['format_id'] = re.sub(r'[\s,/+\[\]()]', '_', format['format_id'])
+                format_id = format['format_id']
+                if format_id not in formats_dict:
+                    formats_dict[format_id] = []
+                formats_dict[format_id].append(format)
 
-        format_selector = self.build_format_selector(req_format)
+            # Make sure all formats have unique format_id
+            for format_id, ambiguous_formats in formats_dict.items():
+                if len(ambiguous_formats) > 1:
+                    for i, format in enumerate(ambiguous_formats):
+                        format['format_id'] = '%s-%d' % (format_id, i)
 
-        # While in format selection we may need to have an access to the original
-        # format set in order to calculate some metrics or do some processing.
-        # For now we need to be able to guess whether original formats provided
-        # by extractor are incomplete or not (i.e. whether extractor provides only
-        # video-only or audio-only formats) for proper formats selection for
-        # extractors with such incomplete formats (see
-        # https://github.com/ytdl-org/youtube-dl/pull/5556).
-        # Since formats may be filtered during format selection and may not match
-        # the original formats the results may be incorrect. Thus original formats
-        # or pre-calculated metrics should be passed to format selection routines
-        # as well.
-        # We will pass a context object containing all necessary additional data
-        # instead of just formats.
-        # This fixes incorrect format selection issue (see
-        # https://github.com/ytdl-org/youtube-dl/issues/10083).
-        incomplete_formats = (
-            # All formats are video-only or
-            all(f.get('vcodec') != 'none' and f.get('acodec') == 'none' for f in formats)
-            # all formats are audio-only
-            or all(f.get('vcodec') == 'none' and f.get('acodec') != 'none' for f in formats))
+            for i, format in enumerate(formats):
+                if format.get('format') is None:
+                    format['format'] = '{id} - {res}{note}'.format(
+                        id=format['format_id'],
+                        res=self.format_resolution(format),
+                        note=' ({0})'.format(format['format_note']) if format.get('format_note') is not None else '',
+                    )
+                # Automatically determine file extension if missing
+                if format.get('ext') is None:
+                    format['ext'] = determine_ext(format['url']).lower()
+                # Automatically determine protocol if missing (useful for format
+                # selection purposes)
+                if format.get('protocol') is None:
+                    format['protocol'] = determine_protocol(format)
+                # Add HTTP headers, so that external programs can use them from the
+                # json output
+                full_format_info = info_dict.copy()
+                full_format_info.update(format)
+                format['http_headers'] = self._calc_headers(full_format_info)
+            # Remove private housekeeping stuff
+            if '__x_forwarded_for_ip' in info_dict:
+                del info_dict['__x_forwarded_for_ip']
 
-        ctx = {
-            'formats': formats,
-            'incomplete_formats': incomplete_formats,
-        }
+            # TODO Central sorting goes here
 
-        formats_to_download = list(format_selector(ctx))
-        if not formats_to_download:
-            raise ExtractorError('requested format not available',
-                                 expected=True)
+            if formats[0] is not info_dict:
+                # only set the 'formats' fields if the original info_dict list them
+                # otherwise we end up with a circular reference, the first (and unique)
+                # element in the 'formats' field in info_dict is info_dict itself,
+                # which can't be exported to json
+                info_dict['formats'] = formats
+            if self.params.get('listformats'):
+                self.list_formats(info_dict)
+                return
 
-        if download:
-            if len(formats_to_download) > 1:
-                self.to_screen('[info] %s: downloading video in %s formats' % (info_dict['id'], len(formats_to_download)))
-            for format in formats_to_download:
-                new_info = dict(info_dict)
-                new_info.update(format)
-                self.process_info(new_info)
-        # We update the info dict with the best quality format (backwards compatibility)
-        info_dict.update(formats_to_download[-1])
+            req_format = self.params.get('format')
+            if req_format is None:
+                req_format = self._default_format_spec(info_dict, download=download)
+                if self.params.get('verbose'):
+                    self.to_stdout('[debug] Default format spec: %s' % req_format)
+
+            format_selector = self.build_format_selector(req_format)
+
+            # While in format selection we may need to have an access to the original
+            # format set in order to calculate some metrics or do some processing.
+            # For now we need to be able to guess whether original formats provided
+            # by extractor are incomplete or not (i.e. whether extractor provides only
+            # video-only or audio-only formats) for proper formats selection for
+            # extractors with such incomplete formats (see
+            # https://github.com/ytdl-org/youtube-dl/pull/5556).
+            # Since formats may be filtered during format selection and may not match
+            # the original formats the results may be incorrect. Thus original formats
+            # or pre-calculated metrics should be passed to format selection routines
+            # as well.
+            # We will pass a context object containing all necessary additional data
+            # instead of just formats.
+            # This fixes incorrect format selection issue (see
+            # https://github.com/ytdl-org/youtube-dl/issues/10083).
+            incomplete_formats = (
+                # All formats are video-only or
+                all(f.get('vcodec') != 'none' and f.get('acodec') == 'none' for f in formats)
+                # all formats are audio-only
+                or all(f.get('vcodec') == 'none' and f.get('acodec') != 'none' for f in formats))
+
+            ctx = {
+                'formats': formats,
+                'incomplete_formats': incomplete_formats,
+            }
+
+            formats_to_download = list(format_selector(ctx))
+            if not formats_to_download:
+                raise ExtractorError('requested format not available',
+                                    expected=True)
+
+            if download:
+                if len(formats_to_download) > 1:
+                    self.to_screen('[info] %s: downloading video in %s formats' % (info_dict['id'], len(formats_to_download)))
+                for format in formats_to_download:
+                    new_info = dict(info_dict)
+                    new_info.update(format)
+                    self.process_info(new_info)
+            # We update the info dict with the best quality format (backwards compatibility)
+            info_dict.update(formats_to_download[-1])
+        else:
+            self.process_info(info_dict)
         return info_dict
 
     def process_subtitles(self, video_id, normal_subtitles, automatic_captions):
@@ -1738,7 +1743,7 @@ class YoutubeDL(object):
         # TODO: backward compatibility, to be removed
         info_dict['fulltitle'] = info_dict['title']
 
-        if 'format' not in info_dict:
+        if not self.params.get('noformatinfo') and 'format' not in info_dict:
             info_dict['format'] = info_dict['ext']
 
         reason = self._match_entry(info_dict, incomplete=False)
@@ -2045,11 +2050,14 @@ class YoutubeDL(object):
                 raise
         return self._download_retcode
 
-    @staticmethod
-    def filter_requested_info(info_dict):
+    def filter_requested_info(self, info_dict):
+        not_requested = ['requested_formats', 'requested_subtitles']
+        if self.params.get('noformatinfo'):
+            not_requested.append('formats')
+            not_requested.append('automatic_captions')
         return dict(
             (k, v) for k, v in info_dict.items()
-            if k not in ['requested_formats', 'requested_subtitles'])
+            if k not in not_requested)
 
     def post_process(self, filename, ie_info):
         """Run all the postprocessors on the given file."""

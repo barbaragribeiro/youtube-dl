@@ -249,6 +249,8 @@ Alternatively, refer to the [developer instructions](#developer-instructions) fo
     --write-description              Write video description to a .description
                                      file
     --write-info-json                Write video metadata to a .info.json file
+    --no-format-data                 Do not write to the .info.json file data concerning 
+                                     video and caption formats and format urls
     --write-annotations              Write video annotations to a
                                      .annotations.xml file
     --load-info-json FILE            JSON file containing the video information

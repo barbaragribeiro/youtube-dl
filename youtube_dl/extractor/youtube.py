@@ -1994,223 +1994,225 @@ class YoutubeIE(YoutubeBaseInfoExtractor):
 
         streaming_formats = try_get(player_response, lambda x: x['streamingData']['formats'], list) or []
         streaming_formats.extend(try_get(player_response, lambda x: x['streamingData']['adaptiveFormats'], list) or [])
-
-        if 'conn' in video_info and video_info['conn'][0].startswith('rtmp'):
-            self.report_rtmp_download()
-            formats = [{
-                'format_id': '_rtmp',
-                'protocol': 'rtmp',
-                'url': video_info['conn'][0],
-                'player_url': player_url,
-            }]
-        elif not is_live and (streaming_formats or len(video_info.get('url_encoded_fmt_stream_map', [''])[0]) >= 1 or len(video_info.get('adaptive_fmts', [''])[0]) >= 1):
-            encoded_url_map = video_info.get('url_encoded_fmt_stream_map', [''])[0] + ',' + video_info.get('adaptive_fmts', [''])[0]
-            if 'rtmpe%3Dyes' in encoded_url_map:
-                raise ExtractorError('rtmpe downloads are not supported, see https://github.com/ytdl-org/youtube-dl/issues/343 for more information.', expected=True)
-            formats = []
-            formats_spec = {}
-            fmt_list = video_info.get('fmt_list', [''])[0]
-            if fmt_list:
-                for fmt in fmt_list.split(','):
-                    spec = fmt.split('/')
-                    if len(spec) > 1:
-                        width_height = spec[1].split('x')
-                        if len(width_height) == 2:
-                            formats_spec[spec[0]] = {
-                                'resolution': spec[1],
-                                'width': int_or_none(width_height[0]),
-                                'height': int_or_none(width_height[1]),
-                            }
-            for fmt in streaming_formats:
-                itag = str_or_none(fmt.get('itag'))
-                if not itag:
-                    continue
-                quality = fmt.get('quality')
-                quality_label = fmt.get('qualityLabel') or quality
-                formats_spec[itag] = {
-                    'asr': int_or_none(fmt.get('audioSampleRate')),
-                    'filesize': int_or_none(fmt.get('contentLength')),
-                    'format_note': quality_label,
-                    'fps': int_or_none(fmt.get('fps')),
-                    'height': int_or_none(fmt.get('height')),
-                    # bitrate for itag 43 is always 2147483647
-                    'tbr': float_or_none(fmt.get('averageBitrate') or fmt.get('bitrate'), 1000) if itag != '43' else None,
-                    'width': int_or_none(fmt.get('width')),
-                }
-
-            for fmt in streaming_formats:
-                if fmt.get('drmFamilies') or fmt.get('drm_families'):
-                    continue
-                url = url_or_none(fmt.get('url'))
-
-                if not url:
-                    cipher = fmt.get('cipher') or fmt.get('signatureCipher')
-                    if not cipher:
-                        continue
-                    url_data = compat_parse_qs(cipher)
-                    url = url_or_none(try_get(url_data, lambda x: x['url'][0], compat_str))
-                    if not url:
-                        continue
-                else:
-                    cipher = None
-                    url_data = compat_parse_qs(compat_urllib_parse_urlparse(url).query)
-
-                stream_type = int_or_none(try_get(url_data, lambda x: x['stream_type'][0]))
-                # Unsupported FORMAT_STREAM_TYPE_OTF
-                if stream_type == 3:
-                    continue
-
-                format_id = fmt.get('itag') or url_data['itag'][0]
-                if not format_id:
-                    continue
-                format_id = compat_str(format_id)
-
-                if cipher:
-                    if 's' in url_data or self._downloader.params.get('youtube_include_dash_manifest', True):
-                        ASSETS_RE = r'"assets":.+?"js":\s*("[^"]+")'
-                        jsplayer_url_json = self._search_regex(
-                            ASSETS_RE,
-                            embed_webpage if age_gate else video_webpage,
-                            'JS player URL (1)', default=None)
-                        if not jsplayer_url_json and not age_gate:
-                            # We need the embed website after all
-                            if embed_webpage is None:
-                                embed_url = proto + '://www.youtube.com/embed/%s' % video_id
-                                embed_webpage = self._download_webpage(
-                                    embed_url, video_id, 'Downloading embed webpage')
-                            jsplayer_url_json = self._search_regex(
-                                ASSETS_RE, embed_webpage, 'JS player URL')
-
-                        player_url = json.loads(jsplayer_url_json)
-                        if player_url is None:
-                            player_url_json = self._search_regex(
-                                r'ytplayer\.config.*?"url"\s*:\s*("[^"]+")',
-                                video_webpage, 'age gate player URL')
-                            player_url = json.loads(player_url_json)
-
-                    if 'sig' in url_data:
-                        url += '&signature=' + url_data['sig'][0]
-                    elif 's' in url_data:
-                        encrypted_sig = url_data['s'][0]
-
-                        if self._downloader.params.get('verbose'):
-                            if player_url is None:
-                                player_desc = 'unknown'
-                            else:
-                                player_type, player_version = self._extract_player_info(player_url)
-                                player_desc = '%s player %s' % ('flash' if player_type == 'swf' else 'html5', player_version)
-                            parts_sizes = self._signature_cache_id(encrypted_sig)
-                            self.to_screen('{%s} signature length %s, %s' %
-                                           (format_id, parts_sizes, player_desc))
-
-                        signature = self._decrypt_signature(
-                            encrypted_sig, video_id, player_url, age_gate)
-                        sp = try_get(url_data, lambda x: x['sp'][0], compat_str) or 'signature'
-                        url += '&%s=%s' % (sp, signature)
-                if 'ratebypass' not in url:
-                    url += '&ratebypass=yes'
-
-                dct = {
-                    'format_id': format_id,
-                    'url': url,
+        formats = None
+        
+        if not self._downloader.params.get('noformatinfo'):
+            if 'conn' in video_info and video_info['conn'][0].startswith('rtmp'):
+                self.report_rtmp_download()
+                formats = [{
+                    'format_id': '_rtmp',
+                    'protocol': 'rtmp',
+                    'url': video_info['conn'][0],
                     'player_url': player_url,
-                }
-                if format_id in self._formats:
-                    dct.update(self._formats[format_id])
-                if format_id in formats_spec:
-                    dct.update(formats_spec[format_id])
-
-                # Some itags are not included in DASH manifest thus corresponding formats will
-                # lack metadata (see https://github.com/ytdl-org/youtube-dl/pull/5993).
-                # Trying to extract metadata from url_encoded_fmt_stream_map entry.
-                mobj = re.search(r'^(?P<width>\d+)[xX](?P<height>\d+)$', url_data.get('size', [''])[0])
-                width, height = (int(mobj.group('width')), int(mobj.group('height'))) if mobj else (None, None)
-
-                if width is None:
-                    width = int_or_none(fmt.get('width'))
-                if height is None:
-                    height = int_or_none(fmt.get('height'))
-
-                filesize = int_or_none(url_data.get(
-                    'clen', [None])[0]) or _extract_filesize(url)
-
-                quality = url_data.get('quality', [None])[0] or fmt.get('quality')
-                quality_label = url_data.get('quality_label', [None])[0] or fmt.get('qualityLabel')
-
-                tbr = (float_or_none(url_data.get('bitrate', [None])[0], 1000)
-                       or float_or_none(fmt.get('bitrate'), 1000)) if format_id != '43' else None
-                fps = int_or_none(url_data.get('fps', [None])[0]) or int_or_none(fmt.get('fps'))
-
-                more_fields = {
-                    'filesize': filesize,
-                    'tbr': tbr,
-                    'width': width,
-                    'height': height,
-                    'fps': fps,
-                    'format_note': quality_label or quality,
-                }
-                for key, value in more_fields.items():
-                    if value:
-                        dct[key] = value
-                type_ = url_data.get('type', [None])[0] or fmt.get('mimeType')
-                if type_:
-                    type_split = type_.split(';')
-                    kind_ext = type_split[0].split('/')
-                    if len(kind_ext) == 2:
-                        kind, _ = kind_ext
-                        dct['ext'] = mimetype2ext(type_split[0])
-                        if kind in ('audio', 'video'):
-                            codecs = None
-                            for mobj in re.finditer(
-                                    r'(?P<key>[a-zA-Z_-]+)=(?P<quote>["\']?)(?P<val>.+?)(?P=quote)(?:;|$)', type_):
-                                if mobj.group('key') == 'codecs':
-                                    codecs = mobj.group('val')
-                                    break
-                            if codecs:
-                                dct.update(parse_codecs(codecs))
-                if dct.get('acodec') == 'none' or dct.get('vcodec') == 'none':
-                    dct['downloader_options'] = {
-                        # Youtube throttles chunks >~10M
-                        'http_chunk_size': 10485760,
-                    }
-                formats.append(dct)
-        else:
-            manifest_url = (
-                url_or_none(try_get(
-                    player_response,
-                    lambda x: x['streamingData']['hlsManifestUrl'],
-                    compat_str))
-                or url_or_none(try_get(
-                    video_info, lambda x: x['hlsvp'][0], compat_str)))
-            if manifest_url:
+                }]
+            elif not is_live and (streaming_formats or len(video_info.get('url_encoded_fmt_stream_map', [''])[0]) >= 1 or len(video_info.get('adaptive_fmts', [''])[0]) >= 1):
+                encoded_url_map = video_info.get('url_encoded_fmt_stream_map', [''])[0] + ',' + video_info.get('adaptive_fmts', [''])[0]
+                if 'rtmpe%3Dyes' in encoded_url_map:
+                    raise ExtractorError('rtmpe downloads are not supported, see https://github.com/ytdl-org/youtube-dl/issues/343 for more information.', expected=True)
                 formats = []
-                m3u8_formats = self._extract_m3u8_formats(
-                    manifest_url, video_id, 'mp4', fatal=False)
-                for a_format in m3u8_formats:
-                    itag = self._search_regex(
-                        r'/itag/(\d+)/', a_format['url'], 'itag', default=None)
-                    if itag:
-                        a_format['format_id'] = itag
-                        if itag in self._formats:
-                            dct = self._formats[itag].copy()
-                            dct.update(a_format)
-                            a_format = dct
-                    a_format['player_url'] = player_url
-                    # Accept-Encoding header causes failures in live streams on Youtube and Youtube Gaming
-                    a_format.setdefault('http_headers', {})['Youtubedl-no-compression'] = 'True'
-                    formats.append(a_format)
+                formats_spec = {}
+                fmt_list = video_info.get('fmt_list', [''])[0]
+                if fmt_list:
+                    for fmt in fmt_list.split(','):
+                        spec = fmt.split('/')
+                        if len(spec) > 1:
+                            width_height = spec[1].split('x')
+                            if len(width_height) == 2:
+                                formats_spec[spec[0]] = {
+                                    'resolution': spec[1],
+                                    'width': int_or_none(width_height[0]),
+                                    'height': int_or_none(width_height[1]),
+                                }
+                for fmt in streaming_formats:
+                    itag = str_or_none(fmt.get('itag'))
+                    if not itag:
+                        continue
+                    quality = fmt.get('quality')
+                    quality_label = fmt.get('qualityLabel') or quality
+                    formats_spec[itag] = {
+                        'asr': int_or_none(fmt.get('audioSampleRate')),
+                        'filesize': int_or_none(fmt.get('contentLength')),
+                        'format_note': quality_label,
+                        'fps': int_or_none(fmt.get('fps')),
+                        'height': int_or_none(fmt.get('height')),
+                        # bitrate for itag 43 is always 2147483647
+                        'tbr': float_or_none(fmt.get('averageBitrate') or fmt.get('bitrate'), 1000) if itag != '43' else None,
+                        'width': int_or_none(fmt.get('width')),
+                    }
+
+                for fmt in streaming_formats:
+                    if fmt.get('drmFamilies') or fmt.get('drm_families'):
+                        continue
+                    url = url_or_none(fmt.get('url'))
+
+                    if not url:
+                        cipher = fmt.get('cipher') or fmt.get('signatureCipher')
+                        if not cipher:
+                            continue
+                        url_data = compat_parse_qs(cipher)
+                        url = url_or_none(try_get(url_data, lambda x: x['url'][0], compat_str))
+                        if not url:
+                            continue
+                    else:
+                        cipher = None
+                        url_data = compat_parse_qs(compat_urllib_parse_urlparse(url).query)
+
+                    stream_type = int_or_none(try_get(url_data, lambda x: x['stream_type'][0]))
+                    # Unsupported FORMAT_STREAM_TYPE_OTF
+                    if stream_type == 3:
+                        continue
+
+                    format_id = fmt.get('itag') or url_data['itag'][0]
+                    if not format_id:
+                        continue
+                    format_id = compat_str(format_id)
+
+                    if cipher:
+                        if 's' in url_data or self._downloader.params.get('youtube_include_dash_manifest', True):
+                            ASSETS_RE = r'"assets":.+?"js":\s*("[^"]+")'
+                            jsplayer_url_json = self._search_regex(
+                                ASSETS_RE,
+                                embed_webpage if age_gate else video_webpage,
+                                'JS player URL (1)', default=None)
+                            if not jsplayer_url_json and not age_gate:
+                                # We need the embed website after all
+                                if embed_webpage is None:
+                                    embed_url = proto + '://www.youtube.com/embed/%s' % video_id
+                                    embed_webpage = self._download_webpage(
+                                        embed_url, video_id, 'Downloading embed webpage')
+                                jsplayer_url_json = self._search_regex(
+                                    ASSETS_RE, embed_webpage, 'JS player URL')
+
+                            player_url = json.loads(jsplayer_url_json)
+                            if player_url is None:
+                                player_url_json = self._search_regex(
+                                    r'ytplayer\.config.*?"url"\s*:\s*("[^"]+")',
+                                    video_webpage, 'age gate player URL')
+                                player_url = json.loads(player_url_json)
+
+                        if 'sig' in url_data:
+                            url += '&signature=' + url_data['sig'][0]
+                        elif 's' in url_data:
+                            encrypted_sig = url_data['s'][0]
+
+                            if self._downloader.params.get('verbose'):
+                                if player_url is None:
+                                    player_desc = 'unknown'
+                                else:
+                                    player_type, player_version = self._extract_player_info(player_url)
+                                    player_desc = '%s player %s' % ('flash' if player_type == 'swf' else 'html5', player_version)
+                                parts_sizes = self._signature_cache_id(encrypted_sig)
+                                self.to_screen('{%s} signature length %s, %s' %
+                                            (format_id, parts_sizes, player_desc))
+
+                            signature = self._decrypt_signature(
+                                encrypted_sig, video_id, player_url, age_gate)
+                            sp = try_get(url_data, lambda x: x['sp'][0], compat_str) or 'signature'
+                            url += '&%s=%s' % (sp, signature)
+                    if 'ratebypass' not in url:
+                        url += '&ratebypass=yes'
+
+                    dct = {
+                        'format_id': format_id,
+                        'url': url,
+                        'player_url': player_url,
+                    }
+                    if format_id in self._formats:
+                        dct.update(self._formats[format_id])
+                    if format_id in formats_spec:
+                        dct.update(formats_spec[format_id])
+
+                    # Some itags are not included in DASH manifest thus corresponding formats will
+                    # lack metadata (see https://github.com/ytdl-org/youtube-dl/pull/5993).
+                    # Trying to extract metadata from url_encoded_fmt_stream_map entry.
+                    mobj = re.search(r'^(?P<width>\d+)[xX](?P<height>\d+)$', url_data.get('size', [''])[0])
+                    width, height = (int(mobj.group('width')), int(mobj.group('height'))) if mobj else (None, None)
+
+                    if width is None:
+                        width = int_or_none(fmt.get('width'))
+                    if height is None:
+                        height = int_or_none(fmt.get('height'))
+
+                    filesize = int_or_none(url_data.get(
+                        'clen', [None])[0]) or _extract_filesize(url)
+
+                    quality = url_data.get('quality', [None])[0] or fmt.get('quality')
+                    quality_label = url_data.get('quality_label', [None])[0] or fmt.get('qualityLabel')
+
+                    tbr = (float_or_none(url_data.get('bitrate', [None])[0], 1000)
+                        or float_or_none(fmt.get('bitrate'), 1000)) if format_id != '43' else None
+                    fps = int_or_none(url_data.get('fps', [None])[0]) or int_or_none(fmt.get('fps'))
+
+                    more_fields = {
+                        'filesize': filesize,
+                        'tbr': tbr,
+                        'width': width,
+                        'height': height,
+                        'fps': fps,
+                        'format_note': quality_label or quality,
+                    }
+                    for key, value in more_fields.items():
+                        if value:
+                            dct[key] = value
+                    type_ = url_data.get('type', [None])[0] or fmt.get('mimeType')
+                    if type_:
+                        type_split = type_.split(';')
+                        kind_ext = type_split[0].split('/')
+                        if len(kind_ext) == 2:
+                            kind, _ = kind_ext
+                            dct['ext'] = mimetype2ext(type_split[0])
+                            if kind in ('audio', 'video'):
+                                codecs = None
+                                for mobj in re.finditer(
+                                        r'(?P<key>[a-zA-Z_-]+)=(?P<quote>["\']?)(?P<val>.+?)(?P=quote)(?:;|$)', type_):
+                                    if mobj.group('key') == 'codecs':
+                                        codecs = mobj.group('val')
+                                        break
+                                if codecs:
+                                    dct.update(parse_codecs(codecs))
+                    if dct.get('acodec') == 'none' or dct.get('vcodec') == 'none':
+                        dct['downloader_options'] = {
+                            # Youtube throttles chunks >~10M
+                            'http_chunk_size': 10485760,
+                        }
+                    formats.append(dct)
             else:
-                error_message = extract_unavailable_message()
-                if not error_message:
-                    error_message = clean_html(try_get(
-                        player_response, lambda x: x['playabilityStatus']['reason'],
+                manifest_url = (
+                    url_or_none(try_get(
+                        player_response,
+                        lambda x: x['streamingData']['hlsManifestUrl'],
                         compat_str))
-                if not error_message:
-                    error_message = clean_html(
-                        try_get(video_info, lambda x: x['reason'][0], compat_str))
-                if error_message:
-                    raise ExtractorError(error_message, expected=True)
-                raise ExtractorError('no conn, hlsvp, hlsManifestUrl or url_encoded_fmt_stream_map information found in video info')
+                    or url_or_none(try_get(
+                        video_info, lambda x: x['hlsvp'][0], compat_str)))
+                if manifest_url:
+                    formats = []
+                    m3u8_formats = self._extract_m3u8_formats(
+                        manifest_url, video_id, 'mp4', fatal=False)
+                    for a_format in m3u8_formats:
+                        itag = self._search_regex(
+                            r'/itag/(\d+)/', a_format['url'], 'itag', default=None)
+                        if itag:
+                            a_format['format_id'] = itag
+                            if itag in self._formats:
+                                dct = self._formats[itag].copy()
+                                dct.update(a_format)
+                                a_format = dct
+                        a_format['player_url'] = player_url
+                        # Accept-Encoding header causes failures in live streams on Youtube and Youtube Gaming
+                        a_format.setdefault('http_headers', {})['Youtubedl-no-compression'] = 'True'
+                        formats.append(a_format)
+                else:
+                    error_message = extract_unavailable_message()
+                    if not error_message:
+                        error_message = clean_html(try_get(
+                            player_response, lambda x: x['playabilityStatus']['reason'],
+                            compat_str))
+                    if not error_message:
+                        error_message = clean_html(
+                            try_get(video_info, lambda x: x['reason'][0], compat_str))
+                    if error_message:
+                        raise ExtractorError(error_message, expected=True)
+                    raise ExtractorError('no conn, hlsvp, hlsManifestUrl or url_encoded_fmt_stream_map information found in video info')
 
         # uploader
         video_uploader = try_get(
@@ -2423,80 +2425,81 @@ class YoutubeIE(YoutubeBaseInfoExtractor):
 
         chapters = self._extract_chapters(video_webpage, description_original, video_id, video_duration)
 
-        # Look for the DASH manifest
-        if self._downloader.params.get('youtube_include_dash_manifest', True):
-            dash_mpd_fatal = True
-            for mpd_url in dash_mpds:
-                dash_formats = {}
-                try:
-                    def decrypt_sig(mobj):
-                        s = mobj.group(1)
-                        dec_s = self._decrypt_signature(s, video_id, player_url, age_gate)
-                        return '/signature/%s' % dec_s
+        if not self._downloader.params.get('noformatinfo'):
+            # Look for the DASH manifest
+            if self._downloader.params.get('youtube_include_dash_manifest', True):
+                dash_mpd_fatal = True
+                for mpd_url in dash_mpds:
+                    dash_formats = {}
+                    try:
+                        def decrypt_sig(mobj):
+                            s = mobj.group(1)
+                            dec_s = self._decrypt_signature(s, video_id, player_url, age_gate)
+                            return '/signature/%s' % dec_s
 
-                    mpd_url = re.sub(r'/s/([a-fA-F0-9\.]+)', decrypt_sig, mpd_url)
+                        mpd_url = re.sub(r'/s/([a-fA-F0-9\.]+)', decrypt_sig, mpd_url)
 
-                    for df in self._extract_mpd_formats(
-                            mpd_url, video_id, fatal=dash_mpd_fatal,
-                            formats_dict=self._formats):
-                        if not df.get('filesize'):
-                            df['filesize'] = _extract_filesize(df['url'])
-                        # Do not overwrite DASH format found in some previous DASH manifest
-                        if df['format_id'] not in dash_formats:
-                            dash_formats[df['format_id']] = df
-                        # Additional DASH manifests may end up in HTTP Error 403 therefore
-                        # allow them to fail without bug report message if we already have
-                        # some DASH manifest succeeded. This is temporary workaround to reduce
-                        # burst of bug reports until we figure out the reason and whether it
-                        # can be fixed at all.
-                        dash_mpd_fatal = False
-                except (ExtractorError, KeyError) as e:
-                    self.report_warning(
-                        'Skipping DASH manifest: %r' % e, video_id)
-                if dash_formats:
-                    # Remove the formats we found through non-DASH, they
-                    # contain less info and it can be wrong, because we use
-                    # fixed values (for example the resolution). See
-                    # https://github.com/ytdl-org/youtube-dl/issues/5774 for an
-                    # example.
-                    formats = [f for f in formats if f['format_id'] not in dash_formats.keys()]
-                    formats.extend(dash_formats.values())
+                        for df in self._extract_mpd_formats(
+                                mpd_url, video_id, fatal=dash_mpd_fatal,
+                                formats_dict=self._formats):
+                            if not df.get('filesize'):
+                                df['filesize'] = _extract_filesize(df['url'])
+                            # Do not overwrite DASH format found in some previous DASH manifest
+                            if df['format_id'] not in dash_formats:
+                                dash_formats[df['format_id']] = df
+                            # Additional DASH manifests may end up in HTTP Error 403 therefore
+                            # allow them to fail without bug report message if we already have
+                            # some DASH manifest succeeded. This is temporary workaround to reduce
+                            # burst of bug reports until we figure out the reason and whether it
+                            # can be fixed at all.
+                            dash_mpd_fatal = False
+                    except (ExtractorError, KeyError) as e:
+                        self.report_warning(
+                            'Skipping DASH manifest: %r' % e, video_id)
+                    if dash_formats:
+                        # Remove the formats we found through non-DASH, they
+                        # contain less info and it can be wrong, because we use
+                        # fixed values (for example the resolution). See
+                        # https://github.com/ytdl-org/youtube-dl/issues/5774 for an
+                        # example.
+                        formats = [f for f in formats if f['format_id'] not in dash_formats.keys()]
+                        formats.extend(dash_formats.values())
 
-        # Check for malformed aspect ratio
-        stretched_m = re.search(
-            r'<meta\s+property="og:video:tag".*?content="yt:stretch=(?P<w>[0-9]+):(?P<h>[0-9]+)">',
-            video_webpage)
-        if stretched_m:
-            w = float(stretched_m.group('w'))
-            h = float(stretched_m.group('h'))
-            # yt:stretch may hold invalid ratio data (e.g. for Q39EVAstoRM ratio is 17:0).
-            # We will only process correct ratios.
-            if w > 0 and h > 0:
-                ratio = w / h
-                for f in formats:
-                    if f.get('vcodec') != 'none':
-                        f['stretched_ratio'] = ratio
+            # Check for malformed aspect ratio
+            stretched_m = re.search(
+                r'<meta\s+property="og:video:tag".*?content="yt:stretch=(?P<w>[0-9]+):(?P<h>[0-9]+)">',
+                video_webpage)
+            if stretched_m:
+                w = float(stretched_m.group('w'))
+                h = float(stretched_m.group('h'))
+                # yt:stretch may hold invalid ratio data (e.g. for Q39EVAstoRM ratio is 17:0).
+                # We will only process correct ratios.
+                if w > 0 and h > 0:
+                    ratio = w / h
+                    for f in formats:
+                        if f.get('vcodec') != 'none':
+                            f['stretched_ratio'] = ratio
 
-        if not formats:
-            if 'reason' in video_info:
-                if 'The uploader has not made this video available in your country.' in video_info['reason']:
-                    regions_allowed = self._html_search_meta(
-                        'regionsAllowed', video_webpage, default=None)
-                    countries = regions_allowed.split(',') if regions_allowed else None
-                    self.raise_geo_restricted(
-                        msg=video_info['reason'][0], countries=countries)
-                reason = video_info['reason'][0]
-                if 'Invalid parameters' in reason:
-                    unavailable_message = extract_unavailable_message()
-                    if unavailable_message:
-                        reason = unavailable_message
-                raise ExtractorError(
-                    'YouTube said: %s' % reason,
-                    expected=True, video_id=video_id)
-            if video_info.get('license_info') or try_get(player_response, lambda x: x['streamingData']['licenseInfos']):
-                raise ExtractorError('This video is DRM protected.', expected=True)
+            if not formats:
+                if 'reason' in video_info:
+                    if 'The uploader has not made this video available in your country.' in video_info['reason']:
+                        regions_allowed = self._html_search_meta(
+                            'regionsAllowed', video_webpage, default=None)
+                        countries = regions_allowed.split(',') if regions_allowed else None
+                        self.raise_geo_restricted(
+                            msg=video_info['reason'][0], countries=countries)
+                    reason = video_info['reason'][0]
+                    if 'Invalid parameters' in reason:
+                        unavailable_message = extract_unavailable_message()
+                        if unavailable_message:
+                            reason = unavailable_message
+                    raise ExtractorError(
+                        'YouTube said: %s' % reason,
+                        expected=True, video_id=video_id)
+                if video_info.get('license_info') or try_get(player_response, lambda x: x['streamingData']['licenseInfos']):
+                    raise ExtractorError('This video is DRM protected.', expected=True)
 
-        self._sort_formats(formats)
+            self._sort_formats(formats)
 
         self.mark_watched(video_id, video_info, player_response)
 

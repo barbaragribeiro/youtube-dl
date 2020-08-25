@@ -742,6 +742,10 @@ def parseOpts(overrideArguments=None):
         action='store_true', dest='writeinfojson', default=False,
         help='Write video metadata to a .info.json file')
     filesystem.add_option(
+        '--no-format-info',
+        action='store_true', dest='noformatinfo', default=False,
+        help='Do not write to the .info.json file data concerning video and caption formats and format urls')
+    filesystem.add_option(
         '--write-annotations',
         action='store_true', dest='writeannotations', default=False,
         help='Write video annotations to a .annotations.xml file')
